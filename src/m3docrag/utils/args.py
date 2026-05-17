@@ -17,7 +17,7 @@
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Sequence, List
 import transformers
-from icecream import ic
+from loguru import logger
 
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
@@ -70,6 +70,7 @@ _example_args = _example_arg_str.strip().split('\n')
 def parse_args(args=None):
     parser = transformers.HfArgumentParser(TrainingArguments)
     parsed_args, remaining_args = parser.parse_args_into_dataclasses(args, return_remaining_strings=True)
-    ic(remaining_args)
+    if remaining_args:
+        logger.warning(f"Unparsed CLI args: {remaining_args}")
 
     return parsed_args

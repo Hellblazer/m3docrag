@@ -119,12 +119,12 @@ def encode_images(
             if to_cpu:
                 embeddings_doc = embeddings_doc.to("cpu")
             if return_doclens:
-                _doclens = batch_doc.attention_mask.squeeze(-1).sum(-1).tolist()
+                _doclens = batch_doc["attention_mask"].squeeze(-1).sum(-1).tolist()
                 doclens.extend(_doclens)
         doc_embs.extend(list(torch.unbind(embeddings_doc)))
 
     if return_doclens:
-        doc_embs, doclens
+        return doc_embs, doclens
     else:
         return doc_embs
 
