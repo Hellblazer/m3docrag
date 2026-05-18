@@ -31,6 +31,7 @@ from tqdm import tqdm
 from m3docrag.datasets.m3_docvqa import M3DocVQADataset, evaluate_prediction_file
 from m3docrag.rag import MultimodalRAGModel
 from m3docrag.retrieval import ColPaliRetrievalModel
+from m3docrag.retrieval.faiss_utils import flatten_page_embeddings
 from m3docrag.utils.args import parse_args
 from m3docrag.utils.distributed import (
     barrier,
@@ -152,25 +153,15 @@ def evaluate(data_loader, rag_model, index=None, data_len=None, args=None, **kwa
     # docid2embs_token_reudced = reduce_embeddings(docid2embs, dim='token')
     # docid2embs_page_token_reudced = reduce_embeddings(docid2embs, dim='page_token')
 
-    all_token_embeddings = []
-    token2pageuid = []
+    all_token_embeddings, token2pageuid = flatten_page_embeddings(
+        docid2embs=docid2embs,
+        dim=128,
+    )
 
-    if args.retrieval_model_type == "colpali":
-        for doc_id, doc_emb in tqdm(docid2embs.items(), total=len(docid2embs)):
-            # e.g., doc_emb - torch.Size([9, 1030, 128])
-            for page_id in range(len(doc_emb)):
-                page_emb = doc_emb[page_id].view(-1, 128)
-                all_token_embeddings.append(page_emb)
-
-                page_uid = f"{doc_id}_page{page_id}"
-                token2pageuid.extend([page_uid] * page_emb.shape[0])
-
-    logger.info(len(all_token_embeddings))
-
-    all_token_embeddings = torch.cat(all_token_embeddings, dim=0)
-    all_token_embeddings = all_token_embeddings.float().numpy()
-
-    logger.info("Created flattened token embeddings / token2pageuid")
+    logger.info(
+        f"Created flattened token embeddings / token2pageuid: "
+        f"shape={all_token_embeddings.shape}, n_tokens={len(token2pageuid)}"
+    )
 
     qid2result = {}
 

@@ -20,6 +20,8 @@ from tqdm.auto import tqdm
 import torch
 import numpy as np
 
+from m3docrag.retrieval.faiss_utils import maxsim_top_k_pages
+
 from .utils import get_top_k_pages, get_top_k_pages_single_page_from_each_doc
 
 class RAGModelBase:
@@ -82,64 +84,25 @@ class RAGModelBase:
 
 
         if index is not None:
-
             # [n_query_tokens, dim]
             query_emb = self.retrieval_model.encode_queries([query])[0]
             query_emb = query_emb.cpu().float().numpy().astype(np.float32)
 
-            # NN search
             k = n_return_pages
-            D, I = index.search(query_emb, k)
+            _, nn_indices = index.search(query_emb, k)
 
-            # Sum the MaxSim scores across all query tokens for each document
-            final_page2scores = {}
-
-            # Iterate over query tokens
-            for q_idx, query_emb in enumerate(query_emb):
-
-                # Initialize a dictionary to hold document relevance scores
-                curent_q_page2scores = {}
-
-                for nn_idx in range(k):
-                    found_nearest_doc_token_idx = I[q_idx, nn_idx]
-
-                    page_uid = token2pageuid[found_nearest_doc_token_idx]  # Get the document ID for this token
-
-                    # reconstruct the original score
-                    doc_token_emb = all_token_embeddings[found_nearest_doc_token_idx]
-                    score = (query_emb * doc_token_emb).sum()
-
-                    # MaxSim: aggregate the highest similarity score for each query token per document
-                    if page_uid not in curent_q_page2scores:
-                        curent_q_page2scores[page_uid] = score
-                    else:
-                        curent_q_page2scores[page_uid] = max(curent_q_page2scores[page_uid], score)
-
-            
-                for page_uid, score in curent_q_page2scores.items():
-                    if page_uid in final_page2scores:
-                        final_page2scores[page_uid] += score
-                    else:
-                        final_page2scores[page_uid] = score
-                    
-            # Sort documents by their final relevance score
-            sorted_pages = sorted(final_page2scores.items(), key=lambda x: x[1], reverse=True)
-
-            # Get the top-k document candidates
-            top_k_pages = sorted_pages[:k]
-
-            
-            # [(doc_id, page_idx, scores)...]
+            top_k_pages = maxsim_top_k_pages(
+                query_emb=query_emb,
+                nn_indices=nn_indices,
+                token2pageuid=token2pageuid,
+                all_token_embeddings=all_token_embeddings,
+                k=k,
+            )
 
             sorted_results = []
             for page_uid, score in top_k_pages:
-                # logger.info(f"{page_uid} with score {score}")
-
-                # page_uid = f"{doc_id}_page{page_id}"
-                doc_id = page_uid.split('_page')[0]
-                page_idx = int(page_uid.split('_page')[-1])
-                sorted_results.append((doc_id, page_idx, score.item()))
-
+                doc_id, _, page_idx_str = page_uid.rpartition('_page')
+                sorted_results.append((doc_id, int(page_idx_str), float(score)))
             return sorted_results
 
         docid2scores = {}

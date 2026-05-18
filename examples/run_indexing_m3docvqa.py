@@ -23,6 +23,7 @@ from loguru import logger
 from tqdm.auto import tqdm
 
 from m3docrag.datasets.m3_docvqa.dataset import M3DocVQADataset
+from m3docrag.retrieval.faiss_utils import flatten_page_embeddings, maxsim_top_k_pages
 from m3docrag.utils.args import parse_args
 
 
@@ -35,6 +36,7 @@ def main():
 
     logger.info(f"Loading M3DocVQA -- all {args.retrieval_model_type} embeddings")
 
+    docid2lens = None
     if args.retrieval_model_type == "colpali":
         docid2embs = dataset.load_all_embeddings()
     elif args.retrieval_model_type == "colbert":
@@ -69,36 +71,11 @@ def main():
 
     logger.info("Flattening all PDF pages")
 
-    all_token_embeddings = []
-    token2pageuid = []
-
-    if args.retrieval_model_type == "colpali":
-        for doc_id, doc_emb in tqdm(docid2embs.items(), total=len(docid2embs)):
-            # e.g., doc_emb - torch.Size([9, 1030, 128])
-            for page_id in range(len(doc_emb)):
-                page_emb = doc_emb[page_id].view(-1, d)
-                all_token_embeddings.append(page_emb)
-
-                page_uid = f"{doc_id}_page{page_id}"
-                token2pageuid.extend([page_uid] * page_emb.shape[0])
-
-    elif args.retrieval_model_type == "colbert":
-        for doc_id, doc_emb in tqdm(docid2embs.items(), total=len(docid2embs)):
-            doc_lens = docid2lens[doc_id]
-
-            # e.g., doc_emb -  torch.Size([2089, 128])
-            # e.g., doc_lens - tensor([258, 240, 251, 231, 229, 268, 235, 211, 166])
-
-            all_token_embeddings.append(doc_emb)
-
-            for page_id, page_len in enumerate(doc_lens):
-                page_uid = f"{doc_id}_page{page_id}"
-                token2pageuid.extend([page_uid] * page_len.item())
-
-    logger.info(len(all_token_embeddings))
-
-    all_token_embeddings = torch.cat(all_token_embeddings, dim=0)
-    all_token_embeddings = all_token_embeddings.float().numpy()
+    all_token_embeddings, token2pageuid = flatten_page_embeddings(
+        docid2embs=docid2embs,
+        dim=d,
+        docid2lens=docid2lens,
+    )
     logger.info(all_token_embeddings.shape)
     logger.info(len(token2pageuid))
 
@@ -120,48 +97,16 @@ def main():
 
     # NN search
     k = 10
-    D, I = index.search(example_text_query_emb, k)  # noqa E741
+    _, nn_indices = index.search(example_text_query_emb, k)
 
-    # Sum the MaxSim scores across all query tokens for each document
-    final_page2scores = {}
+    top_k_pages = maxsim_top_k_pages(
+        query_emb=example_text_query_emb,
+        nn_indices=nn_indices,
+        token2pageuid=token2pageuid,
+        all_token_embeddings=all_token_embeddings,
+        k=k,
+    )
 
-    # Iterate over query tokens
-    for q_idx, query_emb in enumerate(example_text_query_emb):
-        # Initialize a dictionary to hold document relevance scores
-        curent_q_page2scores = {}
-
-        for nn_idx in range(k):
-            found_nearest_doc_token_idx = I[q_idx, nn_idx]
-
-            page_uid = token2pageuid[
-                found_nearest_doc_token_idx
-            ]  # Get the document ID for this token
-
-            # reconstruct the original score
-            doc_token_emb = all_token_embeddings[found_nearest_doc_token_idx]
-            score = (query_emb * doc_token_emb).sum()
-
-            # MaxSim: aggregate the highest similarity score for each query token per document
-            if page_uid not in curent_q_page2scores:
-                curent_q_page2scores[page_uid] = score
-            else:
-                curent_q_page2scores[page_uid] = max(
-                    curent_q_page2scores[page_uid], score
-                )
-
-        for page_uid, score in curent_q_page2scores.items():
-            if page_uid in final_page2scores:
-                final_page2scores[page_uid] += score
-            else:
-                final_page2scores[page_uid] = score
-
-    # Sort documents by their final relevance score
-    sorted_pages = sorted(final_page2scores.items(), key=lambda x: x[1], reverse=True)
-
-    # Get the top-k document candidates
-    top_k_pages = sorted_pages[:k]
-
-    # Output the top-k document IDs and their scores
     logger.info("Top-k page candidates with scores:")
     for page_uid, score in top_k_pages:
         logger.info(f"{page_uid} with score {score}")
